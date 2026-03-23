@@ -1,18 +1,25 @@
-# Python
+# Ignore everything by default (repo will only track whitelisted files below)
+*
+
+# Keep git control files
+!.gitignore
+!.gitattributes
+!.editorconfig
+!README.md
+!DEPLOY_STREAMLIT.md
+!requirements.txt
+!streamlit_app.py
+
+# Keep needed script path
+!Scripts/
+Scripts/*
+!Scripts/flatten_kpi.py
+
+# Python cache / env (explicit)
 __pycache__/
 *.py[cod]
-
-# Virtual env
 .venv/
 venv/
 
-# Streamlit
+# Streamlit secrets
 .streamlit/secrets.toml
-
-# Local exports/data files
-Exports/
-*.xlsx
-
-# OS/editor
-.DS_Store
-Thumbs.db
