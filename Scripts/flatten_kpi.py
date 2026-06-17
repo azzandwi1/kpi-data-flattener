@@ -33,25 +33,25 @@ PIC_SUFFIX_BY_REGION = {
     ("JAWA", "INDRA CHOIRUL HALIM"): "INDRA CHOIRUL HALIM - JAWA",
     ("BALI", "INDRA CHOIRUL HALIM"): "INDRA CHOIRUL HALIM - BALI",
 }
-KALNUSRA_COMBINE_PICS = {"AJENG", "ANDHIKA WAHYU"}
+KALNUSRA_COMBINE_PICS = {"ANDHIKA DWI S", "ANDHIKA WAHYU"}
 KALNUSRA_MEMBERS = {"KALIMANTAN", "NUSRA"}
 SULTIM_COMBINE_PICS = {"REHULINA"}
 SULTIM_MEMBERS = {"INDOTIM", "SULAWESI"}
 PIC_BY_REGION = {
     "BALI": {"INDRA CHOIRUL HALIM"},
     "INDOTIM": {"REHULINA", "YUDHISTIRA"},
-    "JABODETABEK": {"ANGGITA", "BAYU MAULANA", "DILLA"},
+    "JABODETABEK": {"ANGGITA", "BAYU MAULANA", "ARDIAN"},
     "JAWA": {
-        "FAIZAHTUL HASANAH",
+        "GIGIH TUNJUNG",
         "IKHSANUL PUTRA SANDY",
         "INDRA CHOIRUL HALIM",
         "LUTHFI KURNIAWAN",
         "TEGUH MAULANA AZMI",
     },
     "KALIMANTAN": {"AJENG", "ANDHIKA DWI S", "ANDHIKA WAHYU"},
-    "NUSRA": {"AJENG", "ANDHIKA WAHYU"},
+    "NUSRA": {"ANDHIKA DWI S", "ANDHIKA WAHYU"},
     "SULAWESI": {"REHULINA", "RITFAL", "SISWANDO"},
-    "SUMATERA": {"ANGGA", "BINSAR", "KIKY", "LUKMAN"},
+    "SUMATERA": {"ANGGA", "BINSAR", "KIKY", "DIMAS"},
 }
 # In sheet STUCK, only process pivots before this Excel column boundary.
 # Boundary between pivot #3 and #4 is at column BC.
@@ -67,6 +67,11 @@ def should_combine_pic(region, pic):
 
 def normalize_kpi_title(kpi_title):
     text = str(kpi_title).strip()
+    text_upper = text.upper()
+    if "ON TIME PERFORMANCE ODS" in text_upper:
+        return "On Time Performance ODS"
+    if "VIP CLIENT" in text_upper:
+        return "On Time Performance Client VIP"
     if text.upper() in OS_KPI_ALIASES:
         return OS_OVER_EXC_KPI
     # Handle readable variants like:
@@ -83,20 +88,29 @@ def normalize_kpi_title(kpi_title):
 
 def split_kpi_and_category_from_title(title, default_category=None):
     text = str(title).strip()
-    m = re.search(r"\((COD|NON COD|KK)\)\s*$", text, flags=re.IGNORECASE)
+    m = re.search(
+        r"\((COD|NON COD|KK)\)\s*$",
+        text,
+        flags=re.IGNORECASE,
+    )
     if m:
         category = m.group(1).upper()
-        kpi = re.sub(r"\s*\((COD|NON COD|KK)\)\s*$", "", text, flags=re.IGNORECASE).strip()
+        kpi = re.sub(
+            r"\s*\((COD|NON COD|KK)\)\s*$",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        ).strip()
         return kpi, category
     return text, default_category
 
 
 def infer_otp_kpi_title(df, header_row_idx, header_col_idx, fallback_title):
     # Scan banner rows above a pivot and detect OTP KPI title.
-    row_start = max(0, header_row_idx - 10)
+    row_start = max(0, header_row_idx - 20)
     row_end = header_row_idx
     col_end = min(df.shape[1], header_col_idx + 16)
-    patterns = ("ON TIME PERFORMANCE SLA INTERNAL", "ON TIME PERFORMANCE SLA PUBLISH")
+    patterns = ("ON TIME PERFORMANCE",)
 
     for r in range(row_start, row_end):
         for c in range(header_col_idx, col_end):
@@ -230,6 +244,292 @@ def flatten_pivot(input_path, output_path, week_label="Week 3 Jan"):
         kategori = CATEGORY_BY_SHEET.get(sheet_upper, None)
         is_stuck_sheet = sheet_upper in {"STUCK", "OS STUCK"}
         is_otp_category_sheet = sheet_upper in {"OTP COD", "OTP NON COD", "OTP KK"}
+        is_otp_ods_or_vip_sheet = sheet_upper in {"OTP ODS", "OTP VIP CLIENT"}
+        is_otp_by_jenis_sheet = sheet_upper == "OTP ALL"
+        is_os_dual_pivot_sheet = sheet_upper in {"OS NON COD", "OS COD", "OS KK"}
+
+        if is_otp_ods_or_vip_sheet or is_otp_by_jenis_sheet:
+            region_headers = sorted(find_all_region_headers(df), key=lambda x: (x[1], x[0]))
+            if is_otp_ods_or_vip_sheet:
+                if sheet_upper == "OTP ODS":
+                    # OTP ODS: always use the leftmost pivot.
+                    region_headers = region_headers[:2]
+                else:
+                    # OTP VIP Client has 2 pivots but only leftmost is required.
+                    region_headers = region_headers[:1]
+            elif is_otp_by_jenis_sheet:
+                # Use only pivots #2, #3, #4 and skip leftmost pivot.
+                region_headers = region_headers[1:4]
+
+            otp_ods_pivots = []
+            for header_row_idx, header_col_idx in region_headers:
+                pivot_title_raw = infer_otp_kpi_title(df, header_row_idx, header_col_idx, sheet)
+                pivot_kpi_title, pivot_kategori = split_kpi_and_category_from_title(
+                    pivot_title_raw, default_category=kategori
+                )
+                pivot_kpi_title = normalize_kpi_title(pivot_kpi_title)
+
+                on_time_col, over_time_col, _ = find_otp_qty_cols(
+                    df, header_row_idx, header_col_idx, force_offsets=False
+                )
+                if on_time_col is None and (header_col_idx + 1) < df.shape[1]:
+                    on_time_col = header_col_idx + 1
+                if over_time_col is None and (header_col_idx + 3) < df.shape[1]:
+                    over_time_col = header_col_idx + 3
+                if on_time_col is None and over_time_col is None:
+                    continue
+
+                found_otp = {}
+                region_vals = {}
+                current_region = None
+
+                for r in range(header_row_idx + 1, len(df)):
+                    label = df.iloc[r, header_col_idx]
+                    if pd.isna(label):
+                        continue
+                    label_str = str(label).strip()
+                    if label_str == "":
+                        continue
+                    if label_str.lower() == "grand total":
+                        break
+
+                    if is_region(label_str):
+                        current_region = label_str.upper()
+                        on_region = 0
+                        over_region = 0
+                        if on_time_col is not None:
+                            val = df.iloc[r, on_time_col]
+                            if not pd.isna(val):
+                                try:
+                                    on_region = float(val)
+                                except Exception:
+                                    on_region = val
+                        if over_time_col is not None:
+                            val = df.iloc[r, over_time_col]
+                            if not pd.isna(val):
+                                try:
+                                    over_region = float(val)
+                                except Exception:
+                                    over_region = val
+                        region_vals[current_region] = (on_region, over_region)
+                        continue
+
+                    if current_region is None:
+                        continue
+
+                    key = (current_region, label_str.upper())
+                    if on_time_col is not None:
+                        val = df.iloc[r, on_time_col]
+                        if not pd.isna(val):
+                            try:
+                                val = float(val)
+                            except Exception:
+                                pass
+                            found_otp[(key, "ON TIME")] = found_otp.get((key, "ON TIME"), 0) + val
+                    if over_time_col is not None:
+                        val = df.iloc[r, over_time_col]
+                        if not pd.isna(val):
+                            try:
+                                val = float(val)
+                            except Exception:
+                                pass
+                            found_otp[(key, "OVER TIME")] = found_otp.get((key, "OVER TIME"), 0) + val
+
+                if sheet_upper == "OTP ODS":
+                    otp_ods_pivots.append({
+                        "kpi_title": pivot_kpi_title,
+                        "kategori": pivot_kategori,
+                        "found_otp": found_otp,
+                        "region_vals": region_vals,
+                    })
+                    continue
+
+                found_pic_pairs = {(r, p) for ((r, p), _) in found_otp.keys()}
+                found_regions = {r for (r, _) in found_pic_pairs}
+                for region in REGIONS:
+                    for pic in sorted(PIC_BY_REGION.get(region, set())):
+                        output_region = GROUP_MAP.get(region, region)
+                        output_pic = PIC_SUFFIX_BY_REGION.get((region, pic), pic)
+                        if (region, pic) in found_pic_pairs:
+                            on_time = found_otp.get(((region, pic), "ON TIME"), 0)
+                            over_time = found_otp.get(((region, pic), "OVER TIME"), 0)
+                        elif region in found_regions:
+                            on_time, over_time = (0, 0)
+                        else:
+                            on_time, over_time = region_vals.get(region, (0, 0))
+                        total_os = 0
+
+                        if should_combine_pic(region, pic):
+                            key = (output_region, pivot_kpi_title, output_pic, pivot_kategori)
+                            current = combined_rows.get(key, {"ON TIME": 0, "OVER TIME": 0, "TOTAL OS": 0})
+                            current["ON TIME"] += on_time
+                            current["OVER TIME"] += over_time
+                            current["TOTAL OS"] += total_os
+                            combined_rows[key] = current
+                        else:
+                            rows.append({
+                                "Week": week_label,
+                                "Region": output_region,
+                                "KPI INDICES": pivot_kpi_title,
+                                "PIC": output_pic,
+                                "Kategori": pivot_kategori,
+                                "ON TIME": on_time,
+                                "OVER TIME": over_time,
+                                "TOTAL OS": total_os,
+                            })
+
+            if sheet_upper == "OTP ODS" and otp_ods_pivots:
+                left_pivot = otp_ods_pivots[0]
+                pivot_kpi_title = left_pivot["kpi_title"]
+                pivot_kategori = left_pivot["kategori"]
+
+                for region in REGIONS:
+                    source = left_pivot
+                    found_otp = source["found_otp"]
+                    region_vals = source["region_vals"]
+                    found_pic_pairs = {(r, p) for ((r, p), _) in found_otp.keys()}
+                    found_regions = {r for (r, _) in found_pic_pairs}
+
+                    for pic in sorted(PIC_BY_REGION.get(region, set())):
+                        output_region = GROUP_MAP.get(region, region)
+                        output_pic = PIC_SUFFIX_BY_REGION.get((region, pic), pic)
+                        if (region, pic) in found_pic_pairs:
+                            on_time = found_otp.get(((region, pic), "ON TIME"), 0)
+                            over_time = found_otp.get(((region, pic), "OVER TIME"), 0)
+                        elif region in found_regions:
+                            on_time, over_time = (0, 0)
+                        else:
+                            on_time, over_time = region_vals.get(region, (0, 0))
+                        total_os = 0
+
+                        if should_combine_pic(region, pic):
+                            key = (output_region, pivot_kpi_title, output_pic, pivot_kategori)
+                            current = combined_rows.get(key, {"ON TIME": 0, "OVER TIME": 0, "TOTAL OS": 0})
+                            current["ON TIME"] += on_time
+                            current["OVER TIME"] += over_time
+                            current["TOTAL OS"] += total_os
+                            combined_rows[key] = current
+                        else:
+                            rows.append({
+                                "Week": week_label,
+                                "Region": output_region,
+                                "KPI INDICES": pivot_kpi_title,
+                                "PIC": output_pic,
+                                "Kategori": pivot_kategori,
+                                "ON TIME": on_time,
+                                "OVER TIME": over_time,
+                                "TOTAL OS": total_os,
+                            })
+            continue
+
+        if sheet_upper == "RETURN":
+            # Four pivots exist; use only pivots #2, #3, #4.
+            region_headers = sorted(find_all_region_headers(df), key=lambda x: (x[1], x[0]))[1:4]
+            for header_row_idx, header_col_idx in region_headers:
+                pivot_title_raw = df.iloc[1, header_col_idx] if len(df) > 1 and header_col_idx < df.shape[1] else "Tingkat Return"
+                pivot_kpi_title, pivot_kategori = split_kpi_and_category_from_title(
+                    pivot_title_raw, default_category=kategori
+                )
+                if not pivot_kpi_title:
+                    pivot_kpi_title = "Tingkat Return"
+
+                # RETURN has no real ON/OFF SLA.
+                # Map Total AWB -> ON TIME and Total Return -> OVER TIME.
+                found_return = {}
+                found_awb = {}
+                region_return_vals = {}
+                region_awb_vals = {}
+                current_region = None
+                total_return_col = header_col_idx + 1
+                total_awb_col = header_col_idx + 2
+                if total_return_col >= df.shape[1]:
+                    continue
+
+                for r in range(header_row_idx + 1, len(df)):
+                    label = df.iloc[r, header_col_idx]
+                    if pd.isna(label):
+                        continue
+                    label_str = str(label).strip()
+                    if label_str == "":
+                        continue
+                    if label_str.lower() == "grand total":
+                        break
+
+                    if is_region(label_str):
+                        current_region = label_str.upper()
+                        ret_val = df.iloc[r, total_return_col]
+                        if not pd.isna(ret_val):
+                            try:
+                                ret_val = float(ret_val)
+                            except Exception:
+                                pass
+                            region_return_vals[current_region] = ret_val
+                        if total_awb_col < df.shape[1]:
+                            awb_val = df.iloc[r, total_awb_col]
+                            if not pd.isna(awb_val):
+                                try:
+                                    awb_val = float(awb_val)
+                                except Exception:
+                                    pass
+                                region_awb_vals[current_region] = awb_val
+                        continue
+
+                    if current_region is None:
+                        continue
+                    ret_val = df.iloc[r, total_return_col]
+                    if not pd.isna(ret_val):
+                        try:
+                            ret_val = float(ret_val)
+                        except Exception:
+                            pass
+                        key = (current_region, label_str.upper())
+                        found_return[key] = found_return.get(key, 0) + ret_val
+                    if total_awb_col < df.shape[1]:
+                        awb_val = df.iloc[r, total_awb_col]
+                        if not pd.isna(awb_val):
+                            try:
+                                awb_val = float(awb_val)
+                            except Exception:
+                                pass
+                            key = (current_region, label_str.upper())
+                            found_awb[key] = found_awb.get(key, 0) + awb_val
+
+                found_pic_pairs = set(found_return.keys()) | set(found_awb.keys())
+                found_regions = {r for (r, _) in found_pic_pairs}
+                for region in REGIONS:
+                    for pic in sorted(PIC_BY_REGION.get(region, set())):
+                        output_region = GROUP_MAP.get(region, region)
+                        output_pic = PIC_SUFFIX_BY_REGION.get((region, pic), pic)
+                        if (region, pic) in found_pic_pairs:
+                            over_time = found_return.get((region, pic), 0)
+                            on_time = found_awb.get((region, pic), 0)
+                        elif region in found_regions:
+                            over_time = 0
+                            on_time = 0
+                        else:
+                            over_time = region_return_vals.get(region, 0)
+                            on_time = region_awb_vals.get(region, 0)
+                        total_os = 0
+
+                        if should_combine_pic(region, pic):
+                            key = (output_region, pivot_kpi_title, output_pic, pivot_kategori)
+                            current = combined_rows.get(key, {"ON TIME": 0, "OVER TIME": 0, "TOTAL OS": 0})
+                            current["ON TIME"] += on_time
+                            current["OVER TIME"] += over_time
+                            current["TOTAL OS"] += total_os
+                            combined_rows[key] = current
+                        else:
+                            rows.append({
+                                "Week": week_label,
+                                "Region": output_region,
+                                "KPI INDICES": pivot_kpi_title,
+                                "PIC": output_pic,
+                                "Kategori": pivot_kategori,
+                                "ON TIME": on_time,
+                                "OVER TIME": over_time,
+                                "TOTAL OS": total_os,
+                            })
+            continue
 
         if is_otp_category_sheet:
             region_headers = sorted(find_all_region_headers(df), key=lambda x: (x[1], x[0]))
@@ -312,6 +612,7 @@ def flatten_pivot(input_path, output_path, week_label="Week 3 Jan"):
                             found_otp[(key, "OVER TIME")] = found_otp.get((key, "OVER TIME"), 0) + val
 
                 found_pic_pairs = {(r, p) for ((r, p), _) in found_otp.keys()}
+                found_regions = {r for (r, _) in found_pic_pairs}
 
                 for region in REGIONS:
                     for pic in sorted(PIC_BY_REGION.get(region, set())):
@@ -320,7 +621,11 @@ def flatten_pivot(input_path, output_path, week_label="Week 3 Jan"):
                         if (region, pic) in found_pic_pairs:
                             on_time = found_otp.get(((region, pic), "ON TIME"), 0)
                             over_time = found_otp.get(((region, pic), "OVER TIME"), 0)
+                        elif region in found_regions:
+                            # PIC breakdown exists for this region, so missing PIC should stay zero.
+                            on_time, over_time = (0, 0)
                         else:
+                            # No PIC breakdown in this region: fallback to region-level totals.
                             on_time, over_time = region_vals.get(region, (0, 0))
                         total_os = 0
 
@@ -487,35 +792,52 @@ def flatten_pivot(input_path, output_path, week_label="Week 3 Jan"):
 
             continue
 
+        is_pu_sheet = sheet_upper in {"PU API", "PU MANUAL"}
         header_positions = find_header_rows(df)
         if not header_positions:
-            continue
+            # Some PU exports use "Rows Labels" / no Row Labels text at all.
+            # For those, use REGION headers as pivot anchors.
+            if is_pu_sheet:
+                header_positions = find_all_region_headers(df)
+            if not header_positions:
+                continue
 
         # For sheets with multiple pivots, use only the left pivot (smallest col),
         # except STUCK which should process all pivots separately.
         if not is_stuck_sheet:
             header_positions = sorted(header_positions, key=lambda x: (x[1], x[0]))
-            header_positions = [header_positions[0]]
+            if is_os_dual_pivot_sheet:
+                header_positions = header_positions[:2]
+            else:
+                header_positions = [header_positions[0]]
         else:
             # Keep only first 3 pivots (left side), i.e. before column BC.
             header_positions = [hp for hp in header_positions if hp[1] < STUCK_MAX_COL_EXCLUSIVE_IDX]
+            header_positions = sorted(header_positions, key=lambda x: (x[1], x[0]))[:3]
 
         # Special handling for OTP: use left pivot (Region header) for ON/OFF TIME
         # and right pivot (Row Labels header) for TOTAL OS.
         otp_title = isinstance(kpi_title, str) and "OTP (OP - PU)" in kpi_title.upper()
         left_pos = None
         right_pos = None
-        if not is_stuck_sheet and otp_title:
+        if not is_stuck_sheet and (otp_title or is_pu_sheet):
             left_pos = find_region_header(df)
             all_positions = find_header_rows(df)
+            if not all_positions:
+                all_positions = find_all_region_headers(df)
             if all_positions:
                 all_positions = sorted(all_positions, key=lambda x: (x[1], x[0]))
+                if left_pos is None:
+                    left_pos = all_positions[0]
                 right_pos = all_positions[-1]
             if left_pos and right_pos:
                 header_positions = [left_pos, right_pos] if left_pos != right_pos else [left_pos]
 
         otp_found_otp = {}
         otp_found_total = {}
+        otp_region_on_over = {}
+        otp_region_total = {}
+        os_dual_pivots = []
 
         for header_row_idx, header_col_idx in header_positions:
             found = {}
@@ -523,7 +845,7 @@ def flatten_pivot(input_path, output_path, week_label="Week 3 Jan"):
             header_row = df.iloc[header_row_idx]
             gt_col_idx = find_grand_total_col(header_row, header_col_idx)
 
-            is_otp_sheet = sheet_upper in {"PU API", "PU MANUAL"} or otp_title
+            is_otp_sheet = is_pu_sheet or otp_title
 
             on_time_col = over_time_col = total_col = None
             if is_otp_sheet:
@@ -553,6 +875,37 @@ def flatten_pivot(input_path, output_path, week_label="Week 3 Jan"):
 
                 if is_region(label_str):
                     current_region = label_str.upper()
+                    if is_otp_sheet:
+                        is_left = (left_pos is not None and (header_row_idx, header_col_idx) == left_pos)
+                        is_right = (right_pos is not None and (header_row_idx, header_col_idx) == right_pos)
+                        if on_time_col is not None and (is_left or right_pos is None):
+                            val = df.iloc[r, on_time_col]
+                            if not pd.isna(val):
+                                try:
+                                    val = float(val)
+                                except Exception:
+                                    pass
+                                current = otp_region_on_over.get(current_region, {"ON TIME": 0, "OVER TIME": 0})
+                                current["ON TIME"] = val
+                                otp_region_on_over[current_region] = current
+                        if over_time_col is not None and (is_left or right_pos is None):
+                            val = df.iloc[r, over_time_col]
+                            if not pd.isna(val):
+                                try:
+                                    val = float(val)
+                                except Exception:
+                                    pass
+                                current = otp_region_on_over.get(current_region, {"ON TIME": 0, "OVER TIME": 0})
+                                current["OVER TIME"] = val
+                                otp_region_on_over[current_region] = current
+                        if gt_col_idx is not None and (is_right or left_pos is None):
+                            val = df.iloc[r, gt_col_idx]
+                            if not pd.isna(val):
+                                try:
+                                    val = float(val)
+                                except Exception:
+                                    pass
+                                otp_region_total[current_region] = val
                     continue
 
                 if current_region is None:
@@ -607,11 +960,16 @@ def flatten_pivot(input_path, output_path, week_label="Week 3 Jan"):
                     infer_stuck_kpi(df, header_row_idx, header_col_idx, kpi_title)
                 )
 
-            if is_otp_sheet and otp_title:
+            if is_otp_sheet and (otp_title or is_pu_sheet):
                 # accumulate across left/right pivots, append rows after all pivots processed
                 otp_found_otp.update(found_otp)
                 for key, val in found.items():
                     otp_found_total[key] = otp_found_total.get(key, 0) + val
+            elif is_os_dual_pivot_sheet:
+                os_dual_pivots.append({
+                    "kpi_title": pivot_kpi_title,
+                    "found": found,
+                })
             else:
                 # Use fixed PIC list per region so zero values still appear
                 for region in REGIONS:
@@ -637,14 +995,66 @@ def flatten_pivot(input_path, output_path, week_label="Week 3 Jan"):
                                 "TOTAL OS": total_os,
                             })
 
-        if otp_title and otp_found_otp:
+        if is_os_dual_pivot_sheet and os_dual_pivots:
+            left_pivot = os_dual_pivots[0]
+            right_pivot = os_dual_pivots[1] if len(os_dual_pivots) > 1 else left_pivot
+            pivot_kpi_title = left_pivot["kpi_title"]
+
+            for region in REGIONS:
+                source = right_pivot if region == "JABODETABEK" and len(os_dual_pivots) > 1 else left_pivot
+                found = source["found"]
+                for pic in sorted(PIC_BY_REGION.get(region, set())):
+                    output_region = GROUP_MAP.get(region, region)
+                    output_pic = PIC_SUFFIX_BY_REGION.get((region, pic), pic)
+                    total_os = found.get((region, pic), 0)
+
+                    if should_combine_pic(region, pic):
+                        key = (output_region, pivot_kpi_title, output_pic, kategori)
+                        current = combined_rows.get(key, {"ON TIME": "", "OVER TIME": "", "TOTAL OS": 0})
+                        current["TOTAL OS"] += total_os
+                        combined_rows[key] = current
+                    else:
+                        rows.append({
+                            "Week": week_label,
+                            "Region": output_region,
+                            "KPI INDICES": pivot_kpi_title,
+                            "PIC": output_pic,
+                            "Kategori": kategori,
+                            "ON TIME": "",
+                            "OVER TIME": "",
+                            "TOTAL OS": total_os,
+                        })
+
+        has_otp_values = bool(otp_found_otp) or bool(otp_region_on_over) or bool(otp_region_total)
+        if (otp_title or is_pu_sheet) and has_otp_values:
+            otp_on_regions = {r for ((r, _), metric) in otp_found_otp.keys() if metric == "ON TIME"}
+            otp_over_regions = {r for ((r, _), metric) in otp_found_otp.keys() if metric == "OVER TIME"}
+            otp_total_regions = {r for (r, _) in otp_found_total.keys()}
             for region in REGIONS:
                 for pic in sorted(PIC_BY_REGION.get(region, set())):
                     output_region = GROUP_MAP.get(region, region)
                     output_pic = PIC_SUFFIX_BY_REGION.get((region, pic), pic)
-                    on_time = otp_found_otp.get(((region, pic), "ON TIME"), 0)
-                    over_time = otp_found_otp.get(((region, pic), "OVER TIME"), 0)
-                    total_os = otp_found_total.get((region, pic), 0)
+                    region_fallback = otp_region_on_over.get(region, {"ON TIME": 0, "OVER TIME": 0})
+                    if ((region, pic), "ON TIME") in otp_found_otp:
+                        on_time = otp_found_otp.get(((region, pic), "ON TIME"), 0)
+                    elif region in otp_on_regions:
+                        on_time = 0
+                    else:
+                        on_time = region_fallback.get("ON TIME", 0)
+
+                    if ((region, pic), "OVER TIME") in otp_found_otp:
+                        over_time = otp_found_otp.get(((region, pic), "OVER TIME"), 0)
+                    elif region in otp_over_regions:
+                        over_time = 0
+                    else:
+                        over_time = region_fallback.get("OVER TIME", 0)
+
+                    if (region, pic) in otp_found_total:
+                        total_os = otp_found_total.get((region, pic), 0)
+                    elif region in otp_total_regions:
+                        total_os = 0
+                    else:
+                        total_os = otp_region_total.get(region, 0)
                     if should_combine_pic(region, pic):
                         key = (output_region, kpi_title, output_pic, kategori)
                         current = combined_rows.get(key, {"ON TIME": 0, "OVER TIME": 0, "TOTAL OS": 0})
